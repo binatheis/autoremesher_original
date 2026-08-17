@@ -123,6 +123,15 @@ target_link_libraries(autoremesher_core PUBLIC ${_tbb_target})
 
 set_target_properties(autoremesher_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# On non-Windows, hide all symbols from the static core so that when it is
+# linked into the Python extension .so, none of its (or TBB's inline) symbols
+# are exported and collide with libtbb.so or other libraries loaded by Python.
+if(NOT WIN32)
+    set_target_properties(autoremesher_core PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+endif()
+
 if(MSVC)
     target_compile_options(autoremesher_core PRIVATE /bigobj /fp:fast)
     target_compile_definitions(autoremesher_core PRIVATE

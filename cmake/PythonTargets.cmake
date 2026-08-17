@@ -130,7 +130,14 @@ function(ar_add_python_module TAG PYTHON_EXE ABI3)
 
     if(NOT MSVC)
         target_link_options(autoremesher_engine_${TAG} PRIVATE
-            $<$<PLATFORM_ID:Linux>:-Wl,--gc-sections>)
+            $<$<PLATFORM_ID:Linux>:-Wl,--gc-sections>
+            # Prevent any static-library symbols (autoremesher_core, inline
+            # TBB functions, etc.) from being exported from the extension.
+            # On Linux the bundled TBB is a shared library (libtbb.so); if
+            # inline TBB functions compiled into autoremesher_core were also
+            # exported, the dynamic loader could resolve calls to the wrong
+            # copy (with its own static state) and crash.
+            $<$<PLATFORM_ID:Linux>:-Wl,--exclude-libs,ALL>)
     endif()
 
     message(STATUS "Python module [${TAG}]: ${PYTHON_EXE}")

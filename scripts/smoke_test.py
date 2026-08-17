@@ -30,11 +30,23 @@ def main() -> int:
         [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3],
     ]
 
+    # Diagnostic: first try remesh() WITHOUT a progress callback to isolate
+    # whether the crash is in the callback trampoline or in the core code.
+    print("[diag] remesh without callback...", flush=True)
+    r0 = autoremesher.AutoRemesher(verts, tris)
+    r0.set_target_triangle_count(200)
+    r0.set_model_type(ModelType.Organic)
+    assert r0.remesh(), "remesh() without callback failed"
+    print("[diag] remesh without callback OK", flush=True)
+    del r0
+    gc.collect()
+
     progress = []
     remesher = autoremesher.AutoRemesher(verts, tris)
     remesher.set_target_triangle_count(200)
     remesher.set_model_type(ModelType.Organic)
     remesher.set_progress_callback(lambda p, s: progress.append(p))
+    print("[diag] remesh with callback...", flush=True)
     assert remesher.remesh(), "remesh() failed"
 
     out_vertices = remesher.get_remeshed_vertices()
