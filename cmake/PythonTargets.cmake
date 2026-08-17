@@ -73,7 +73,8 @@ function(ar_add_python_module TAG PYTHON_EXE ABI3)
     target_compile_features(nanobind_${TAG} PUBLIC cxx_std_17)
     set_target_properties(nanobind_${TAG} PROPERTIES
         POSITION_INDEPENDENT_CODE ON
-        CXX_VISIBILITY_PRESET hidden)
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
     target_compile_definitions(nanobind_${TAG} PRIVATE
         $<$<CONFIG:Release,MinSizeRel,RelWithDebInfo>:NB_COMPACT_ASSERTIONS>)
     if(ABI3)
@@ -104,6 +105,7 @@ function(ar_add_python_module TAG PYTHON_EXE ABI3)
         ARCHIVE_OUTPUT_NAME "autoremesher_engine_${TAG}"
         SUFFIX "${_suffix}"
         CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
         LIBRARY_OUTPUT_DIRECTORY "${_out_dir}"
         RUNTIME_OUTPUT_DIRECTORY "${_out_dir}"
         ARCHIVE_OUTPUT_DIRECTORY "${_out_dir}"

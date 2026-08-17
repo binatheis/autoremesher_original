@@ -58,6 +58,11 @@ add_subdirectory(thirdparty/tbb EXCLUDE_FROM_ALL)
 if(TARGET tbb_static)
     set_property(TARGET tbb_static PROPERTY CXX_STANDARD 14)
     set_property(TARGET tbb_static PROPERTY CXX_STANDARD_REQUIRED ON)
+    # The Python extensions are shared modules; on Linux every object linked
+    # into a .so must be position-independent. TBB's own CMakeLists doesn't
+    # enable -fPIC, so force it here. Harmless on Windows (MSVC ignores PIC
+    # for static libs) and macOS.
+    set_property(TARGET tbb_static PROPERTY POSITION_INDEPENDENT_CODE ON)
 endif()
 
 # ---------------------------------------------------------------------------
