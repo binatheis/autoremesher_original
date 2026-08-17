@@ -7,17 +7,20 @@ result. Used by CI after `pip install <wheel>`; also handy locally.
     python scripts/smoke_test.py
 """
 
+import faulthandler
 import gc
 import sys
 
 import numpy as np
+
+faulthandler.enable()
 
 
 def main() -> int:
     import autoremesher
     from autoremesher import ModelType, Vector3, vertices_to_numpy
 
-    print(f"python {sys.version.split()[0]} | autoremesher {autoremesher.__version__}")
+    print(f"python {sys.version.split()[0]} | autoremesher {autoremesher.__version__}", flush=True)
 
     # --- low-level API ------------------------------------------------------
     verts = [Vector3(x, y, z) for x in (0.0, 1.0) for y in (0.0, 1.0) for z in (0.0, 1.0)]
@@ -65,7 +68,7 @@ def main() -> int:
     assert new_v.shape[0] > 0 and len(new_f) > 0, "convenience remesh() empty"
 
     print(f"smoke test OK: {new_v.shape[0]} vertices, {len(new_f)} faces, "
-          f"{sum(1 for f in new_f if len(f) == 4)} quads")
+          f"{sum(1 for f in new_f if len(f) == 4)} quads", flush=True)
     return 0
 
 

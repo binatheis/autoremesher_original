@@ -43,10 +43,26 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_G
 endif()
 
 # ---------------------------------------------------------------------------
-# Bundled TBB (static on every platform so the wheels/CLI are self-contained)
+# Bundled TBB. The legacy TBB tries to dlopen its own RML server (libirml.so)
+# at runtime and its fallback private-RML path is not safe when TBB code is
+# statically linked into a Python extension .so on Linux. Upstream's qmake
+# project links -ltbb on Linux/macOS and ships a bundled tbb.dll on Windows,
+# so we follow the same pattern:
+#   - Linux: bundled TBB built as a shared library (auditwheel bundles it
+#     into the wheel; the CLI artifact must include libtbb.so).
+#   - Windows/macOS: bundled TBB built as a static library.
 # ---------------------------------------------------------------------------
-set(TBB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-set(TBB_BUILD_STATIC ON CACHE BOOL "" FORCE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_tbb_shared ON)
+    set(_tbb_static OFF)
+    set(_tbb_target tbb)
+else()
+    set(_tbb_shared OFF)
+    set(_tbb_static ON)
+    set(_tbb_target tbb_static)
+endif()
+set(TBB_BUILD_SHARED ${_tbb_shared} CACHE BOOL "" FORCE)
+set(TBB_BUILD_STATIC ${_tbb_static} CACHE BOOL "" FORCE)
 set(TBB_BUILD_TBBMALLOC OFF CACHE BOOL "" FORCE)
 set(TBB_BUILD_TBBMALLOC_PROXY OFF CACHE BOOL "" FORCE)
 set(TBB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -58,11 +74,16 @@ add_subdirectory(thirdparty/tbb EXCLUDE_FROM_ALL)
 if(TARGET tbb_static)
     set_property(TARGET tbb_static PROPERTY CXX_STANDARD 14)
     set_property(TARGET tbb_static PROPERTY CXX_STANDARD_REQUIRED ON)
-    # The Python extensions are shared modules; on Linux every object linked
-    # into a .so must be position-independent. TBB's own CMakeLists doesn't
-    # enable -fPIC, so force it here. Harmless on Windows (MSVC ignores PIC
-    # for static libs) and macOS.
-    set_property(TARGET tbb_static PROPERTY POSITION_INDEPENDENT_CODE ON)
+    # On non-Windows the Python extensions are shared modules; every object
+    # linked into a .so must be position-independent. TBB's own CMakeLists
+    # doesn't enable -fPIC, so force it here. Harmless on macOS.
+    if(NOT WIN32)
+        set_property(TARGET tbb_static PROPERTY POSITION_INDEPENDENT_CODE ON)
+    endif()
+endif()
+if(TARGET tbb)
+    set_property(TARGET tbb PROPERTY CXX_STANDARD 14)
+    set_property(TARGET tbb PROPERTY CXX_STANDARD_REQUIRED ON)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -94,9 +115,11 @@ target_compile_definitions(autoremesher_core PUBLIC
     NOMINMAX
 )
 
-# Static TBB: consumers must not rely on TBB's pragma-based auto-linking.
+# TBB: consumers must not rely on TBB's pragma-based auto-linking.
+# On Linux use the bundled shared libtbb.so (matches upstream .pro); on
+# Windows/macOS use the bundled static lib.
 target_compile_definitions(autoremesher_core PUBLIC __TBB_NO_IMPLICIT_LINKAGE=1)
-target_link_libraries(autoremesher_core PUBLIC tbb_static)
+target_link_libraries(autoremesher_core PUBLIC ${_tbb_target})
 
 set_target_properties(autoremesher_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -112,7 +135,12 @@ elseif(APPLE)
 else()
     # x86-64-v2 baseline: runs on Linux CPUs without AVX2 (as upstream .pro)
     target_compile_options(autoremesher_core PRIVATE -O3 -funroll-loops -march=x86-64-v2)
-    target_link_libraries(autoremesher_core PUBLIC dl pthread)
+    # dl/pthread are public link dependencies of the bundled tbb shared target
+    # on Linux, so they are inherited transitively; keep them explicit only if
+    # we ever fall back to a static TBB on Linux.
+    if(_tbb_target STREQUAL "tbb_static")
+        target_link_libraries(autoremesher_core PUBLIC dl pthread)
+    endif()
 endif()
 
 if(AR_BUILD_CLI)

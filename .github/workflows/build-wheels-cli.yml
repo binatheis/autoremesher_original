@@ -33,6 +33,11 @@ jobs:
     runs-on: ubuntu-22.04
     container: quay.io/pypa/manylinux_2_28_x86_64
     timeout-minutes: 120
+    env:
+      # On Linux the bundled TBB is built as a shared library so its internal
+      # RML loader is robust inside a Python extension .so. Tests/CLI need the
+      # build tree in the library search path.
+      LD_LIBRARY_PATH: build/build/Release/thirdparty/tbb
 
     steps:
       - uses: actions/checkout@v4
@@ -90,11 +95,15 @@ jobs:
 
       - name: Test (ctest, per-test)
         run: ctest --preset conan-release --output-on-failure
+        env:
+          LD_LIBRARY_PATH: build/build/Release/thirdparty/tbb
 
       - name: Test report (full suite, JSON timings)
         run: |
           export AR_TEST_REPORT="$GITHUB_WORKSPACE/test_report.json"
           ./build/build/Release/tests/autoremesher_tests
+        env:
+          LD_LIBRARY_PATH: build/build/Release/thirdparty/tbb
 
       - name: Package wheels
         run: |
@@ -114,10 +123,10 @@ jobs:
           CP311=$(ls wheelhouse/*cp311-*.whl)
           ABI3=$(ls wheelhouse/*abi3-*.whl)
           /opt/python/cp311-cp311/bin/pip install --quiet numpy "$CP311"
-          /opt/python/cp311-cp311/bin/python scripts/smoke_test.py
+          PYTHONFAULTHANDLER=1 /opt/python/cp311-cp311/bin/python -u scripts/smoke_test.py
           for PY in /opt/python/cp312-cp312/bin/python /opt/python/cp313-cp313/bin/python; do
             $PY -m pip install --quiet numpy "$ABI3"
-            $PY scripts/smoke_test.py
+            PYTHONFAULTHANDLER=1 $PY -u scripts/smoke_test.py
           done
 
       - name: Smoke test CLI
@@ -160,7 +169,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: autoremesher-cli-linux-x86_64
-          path: build/build/Release/cli/autoremesher-cli
+          path: |
+            build/build/Release/cli/autoremesher-cli
+            build/build/Release/thirdparty/tbb/libtbb.so*
           if-no-files-found: error
 
       - name: Upload test report
