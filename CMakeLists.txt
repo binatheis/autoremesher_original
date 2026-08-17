@@ -32,6 +32,17 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---------------------------------------------------------------------------
+# GCC 14 introduced -Wchanges-meaning and treats the bundled legacy TBB's
+# task.h name reuse (a method named `task()` shadowing the class `task`) as
+# a hard error. TBB headers are PUBLIC includes of autoremesher_core, so
+# every target in the project (core, CLI, bindings, tests) is affected.
+# Suppress the warning globally rather than per-target.
+# ---------------------------------------------------------------------------
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
+    add_compile_options(-Wno-changes-meaning)
+endif()
+
+# ---------------------------------------------------------------------------
 # Bundled TBB (static on every platform so the wheels/CLI are self-contained)
 # ---------------------------------------------------------------------------
 set(TBB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -47,11 +58,6 @@ add_subdirectory(thirdparty/tbb EXCLUDE_FROM_ALL)
 if(TARGET tbb_static)
     set_property(TARGET tbb_static PROPERTY CXX_STANDARD 14)
     set_property(TARGET tbb_static PROPERTY CXX_STANDARD_REQUIRED ON)
-    # GCC 14 introduced -Wchanges-meaning and treats the old TBB task.h
-    # name reuse as an error. Suppress it so the bundled legacy TBB compiles.
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
-        target_compile_options(tbb_static PRIVATE -Wno-changes-meaning)
-    endif()
 endif()
 
 # ---------------------------------------------------------------------------
