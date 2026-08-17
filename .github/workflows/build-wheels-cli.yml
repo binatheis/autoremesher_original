@@ -331,7 +331,9 @@ jobs:
           architecture: "x64"
       - name: Capture Python 3.11 path
         shell: pwsh
-        run: "PY311_EXECUTABLE=$((python -c 'import sys; print(sys.executable)') -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        run: |
+          $py = (python -c 'import sys; print(sys.executable)') -replace '\\','/'
+          "PY311_EXECUTABLE=$py" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Set up Python 3.12 x64
         uses: actions/setup-python@v5
@@ -340,7 +342,9 @@ jobs:
           architecture: "x64"
       - name: Capture Python 3.12 path
         shell: pwsh
-        run: "PY312_EXECUTABLE=$((python -c 'import sys; print(sys.executable)') -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        run: |
+          $py = (python -c 'import sys; print(sys.executable)') -replace '\\','/'
+          "PY312_EXECUTABLE=$py" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install build tools
         run: |
