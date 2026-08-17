@@ -121,7 +121,16 @@ jobs:
           done
 
       - name: Install CLI (bundles oneTBB shared library)
-        run: cmake --install build/build/Release --prefix dist_cli
+        run: |
+          cmake --install build/build/Release --prefix dist_cli
+          # Copy the oneTBB shared library next to the CLI. The build-tree
+          # RPATH points into the Conan cache, so ldd resolves it there;
+          # the installed CLI uses RPATH=$ORIGIN and finds the copy.
+          TBB_LIB=$(ldd build/build/Release/cli/autoremesher-cli | grep 'libtbb' | awk '{print $3}')
+          if [ -n "$TBB_LIB" ]; then
+            cp -L "$TBB_LIB" dist_cli/bin/
+            echo "Bundled TBB library: $TBB_LIB -> dist_cli/bin/"
+          fi
 
       - name: Smoke test CLI
         run: |

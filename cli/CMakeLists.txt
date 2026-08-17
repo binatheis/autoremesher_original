@@ -26,9 +26,3 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 install(TARGETS autoremesher-cli RUNTIME DESTINATION bin)
-
-# Bundle the oneTBB shared library next to the CLI on Linux so the artifact
-# is self-contained.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    install(FILES $<TARGET_FILE:TBB::tbb> DESTINATION bin)
-endif()
