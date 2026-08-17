@@ -1,0 +1,466 @@
+name: build-wheels-cli
+
+# Builds, per platform, with a SINGLE CMake configure+build:
+#   - Python wheels: cp311 (dedicated) + cp312-abi3 (imports on 3.12, 3.13, 3.14)
+#   - autoremesher-cli binary
+#   - GoogleTest suite (+ consolidated JSON timing report)
+#
+# Conan only provides nanobind/2.13.0, cli11/2.2.0 and gtest/1.18.0; Eigen,
+# TBB, meshoptimizer and isotropicremesher are bundled in thirdparty/.
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["*"]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CONAN_ARGS: -s compiler.cppstd=17 -s build_type=Release --build=missing -c tools.cmake.cmaketoolchain:generator=Ninja
+
+jobs:
+  # =========================================================================
+  # Linux x86_64 — manylinux_2_28 container (all CPython versions preinstalled
+  # under /opt/python, glibc 2.28 baseline for PyPI-compatible wheels)
+  # =========================================================================
+  linux:
+    name: Linux x86_64 (manylinux_2_28)
+    runs-on: ubuntu-22.04
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Git safe directory (container runs as root)
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install build tools
+        run: |
+          /opt/python/cp312-cp312/bin/pip install --quiet conan cmake ninja auditwheel
+          ln -sf /opt/python/cp312-cp312/bin/conan /usr/local/bin/conan
+          ln -sf /opt/python/cp312-cp312/bin/cmake /usr/local/bin/cmake
+          ln -sf /opt/python/cp312-cp312/bin/ninja /usr/local/bin/ninja
+          yum install -y -q ccache || true
+          conan --version && cmake --version | head -1 && ninja --version
+          gcc --version | head -1
+
+      - name: Resolve version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then V="${GITHUB_REF_NAME#v}"; else V="1.1.0.dev0"; fi
+          echo "AR_VERSION=$V" >> "$GITHUB_ENV"
+
+      - name: Restore Conan cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.conan2
+          key: conan-linux-x64-${{ hashFiles('conanfile.py', 'CMakeLists.txt') }}
+          restore-keys: conan-linux-x64-
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-x64-${{ hashFiles('src/AutoRemesher/*.cpp', 'thirdparty/tbb/src/**') }}
+          restore-keys: ccache-linux-x64-
+
+      - name: Conan install
+        run: |
+          conan profile detect --force
+          conan install . -of build $CONAN_ARGS
+
+      - name: Configure (single configure for all artifacts)
+        run: |
+          LAUNCHER=""
+          if command -v ccache >/dev/null; then
+            LAUNCHER="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          fi
+          cmake --preset conan-release \
+            -DAR_PYTHON311_EXECUTABLE=/opt/python/cp311-cp311/bin/python \
+            -DAR_PYTHON312_EXECUTABLE=/opt/python/cp312-cp312/bin/python \
+            $LAUNCHER
+
+      - name: Build (core compiled once; bindings/CLI/tests link against it)
+        run: cmake --build --preset conan-release --parallel
+
+      - name: Test (ctest, per-test)
+        run: ctest --preset conan-release --output-on-failure
+
+      - name: Test report (full suite, JSON timings)
+        run: |
+          export AR_TEST_REPORT="$GITHUB_WORKSPACE/test_report.json"
+          ./build/build/Release/tests/autoremesher_tests
+
+      - name: Package wheels
+        run: |
+          mkdir -p dist_raw wheelhouse
+          /opt/python/cp312-cp312/bin/python scripts/package_wheels.py \
+            --build-dir build/build/Release \
+            --version "$AR_VERSION" \
+            --platform-tag manylinux_2_28_x86_64 \
+            --outdir dist_raw
+          for whl in dist_raw/*.whl; do
+            auditwheel repair "$whl" -w wheelhouse/
+          done
+          ls -lh wheelhouse/
+
+      - name: Smoke test wheel (cp311, cp312, cp313)
+        run: |
+          CP311=$(ls wheelhouse/*cp311-*.whl)
+          ABI3=$(ls wheelhouse/*abi3-*.whl)
+          /opt/python/cp311-cp311/bin/pip install --quiet numpy "$CP311"
+          /opt/python/cp311-cp311/bin/python scripts/smoke_test.py
+          for PY in /opt/python/cp312-cp312/bin/python /opt/python/cp313-cp313/bin/python; do
+            $PY -m pip install --quiet numpy "$ABI3"
+            $PY scripts/smoke_test.py
+          done
+
+      - name: Smoke test CLI
+        run: |
+          /opt/python/cp312-cp312/bin/python - <<'EOF'
+          verts = [(x, y, z) for x in (0., 1.) for y in (0., 1.) for z in (0., 1.)]
+          faces = [(0,1,3,2),(4,6,7,5),(0,4,5,1),(2,3,7,6),(0,2,6,4),(1,5,7,3)]
+          with open("cube.obj", "w") as f:
+              for v in verts: f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+              for q in faces: f.write("f " + " ".join(str(i + 1) for i in q) + "\n")
+          EOF
+          ./build/build/Release/cli/autoremesher-cli \
+            -i cube.obj -o cube_remeshed.obj --report cli_report.txt \
+            --target-quads 200 --quiet
+          test -f cube_remeshed.obj && test -f cli_report.txt
+          grep -c "^f " cube_remeshed.obj
+
+      - name: Save Conan cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.conan2
+          key: conan-linux-x64-${{ hashFiles('conanfile.py', 'CMakeLists.txt') }}
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-x64-${{ hashFiles('src/AutoRemesher/*.cpp', 'thirdparty/tbb/src/**') }}
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoremesher-wheels-linux-x86_64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+      - name: Upload CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoremesher-cli-linux-x86_64
+          path: build/build/Release/cli/autoremesher-cli
+          if-no-files-found: error
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoremesher-test-report-linux
+          path: |
+            test_report.json
+            cli_report.txt
+
+  # =========================================================================
+  # macOS arm64
+  # =========================================================================
+  macos:
+    name: macOS arm64
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Capture Python 3.11 path
+        run: echo "PY311_EXECUTABLE=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Capture Python 3.12 path
+        run: echo "PY312_EXECUTABLE=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        run: |
+          brew install --quiet conan cmake ninja ccache
+          python -m pip install --quiet numpy
+
+      - name: Resolve version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then V="${GITHUB_REF_NAME#v}"; else V="1.1.0.dev0"; fi
+          echo "AR_VERSION=$V" >> "$GITHUB_ENV"
+
+      - name: Restore caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.conan2
+            ~/Library/Caches/ccache
+          key: build-macos-arm64-${{ hashFiles('conanfile.py', 'CMakeLists.txt', 'src/AutoRemesher/*.cpp') }}
+          restore-keys: build-macos-arm64-
+
+      - name: Conan install
+        run: |
+          conan profile detect --force
+          conan install . -of build $CONAN_ARGS
+
+      - name: Configure (single configure for all artifacts)
+        run: |
+          cmake --preset conan-release \
+            -DAR_PYTHON311_EXECUTABLE="$PY311_EXECUTABLE" \
+            -DAR_PYTHON312_EXECUTABLE="$PY312_EXECUTABLE" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build (core compiled once; bindings/CLI/tests link against it)
+        run: cmake --build --preset conan-release --parallel
+
+      - name: Test (ctest, per-test)
+        run: ctest --preset conan-release --output-on-failure
+
+      - name: Test report (full suite, JSON timings)
+        run: |
+          export AR_TEST_REPORT="$GITHUB_WORKSPACE/test_report.json"
+          ./build/build/Release/tests/autoremesher_tests
+
+      - name: Package wheels
+        run: |
+          python scripts/package_wheels.py \
+            --build-dir build/build/Release \
+            --version "$AR_VERSION" \
+            --platform-tag macosx_12_0_arm64 \
+            --outdir wheelhouse
+          ls -lh wheelhouse/
+          for whl in wheelhouse/*.whl; do
+            echo "=== $whl linked libraries ==="
+            SO=$(python -c "import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); print([n for n in z.namelist() if n.endswith('.so')][0])" "$whl")
+            unzip -p "$whl" "$SO" > /tmp/mod.so
+            otool -L /tmp/mod.so
+          done
+
+      - name: Smoke test wheels (3.11 dedicated + 3.12 abi3)
+        run: |
+          CP311=$(ls wheelhouse/*cp311-*.whl)
+          ABI3=$(ls wheelhouse/*abi3-*.whl)
+          "$PY311_EXECUTABLE" -m pip install --quiet numpy "$CP311"
+          "$PY311_EXECUTABLE" scripts/smoke_test.py
+          "$PY312_EXECUTABLE" -m pip install --quiet numpy "$ABI3"
+          "$PY312_EXECUTABLE" scripts/smoke_test.py
+
+      - name: Smoke test CLI
+        run: |
+          python - <<'EOF'
+          verts = [(x, y, z) for x in (0., 1.) for y in (0., 1.) for z in (0., 1.)]
+          faces = [(0,1,3,2),(4,6,7,5),(0,4,5,1),(2,3,7,6),(0,2,6,4),(1,5,7,3)]
+          with open("cube.obj", "w") as f:
+              for v in verts: f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+              for q in faces: f.write("f " + " ".join(str(i + 1) for i in q) + "\n")
+          EOF
+          ./build/build/Release/cli/autoremesher-cli \
+            -i cube.obj -o cube_remeshed.obj --report cli_report.txt \
+            --target-quads 200 --quiet
+          test -f cube_remeshed.obj && test -f cli_report.txt
+          grep -c "^f " cube_remeshed.obj
+
+      - name: Save caches
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.conan2
+            ~/Library/Caches/ccache
+          key: build-macos-arm64-${{ hashFiles('conanfile.py', 'CMakeLists.txt', 'src/AutoRemesher/*.cpp') }}
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoremesher-wheels-macos-arm64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+      - name: Upload CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoremesher-cli-macos-arm64
+          path: build/build/Release/cli/autoremesher-cli
+          if-no-files-found: error
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoremesher-test-report-macos
+          path: |
+            test_report.json
+            cli_report.txt
+
+  # =========================================================================
+  # Windows x64 (static libraries, dynamic CRT = "static-md")
+  # =========================================================================
+  windows:
+    name: Windows x64 (static-md)
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: "x64"
+      - name: Capture Python 3.11 path
+        shell: pwsh
+        run: "PY311_EXECUTABLE=$((python -c 'import sys; print(sys.executable)') -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+      - name: Capture Python 3.12 path
+        shell: pwsh
+        run: "PY312_EXECUTABLE=$((python -c 'import sys; print(sys.executable)') -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install build tools
+        run: |
+          python -m pip install --quiet conan ninja numpy
+          conan --version
+          cmake --version | Select-Object -First 1
+          ninja --version
+          choco install sccache -y --no-progress 2>$null || Write-Host "sccache unavailable, continuing without compiler cache"
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/*") { $V = $env:GITHUB_REF_NAME -replace "^v","" } else { $V = "1.1.0.dev0" }
+          "AR_VERSION=$V" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Restore caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.conan2
+            $env:LOCALAPPDATA\sccache
+          key: build-windows-x64-${{ hashFiles('conanfile.py', 'CMakeLists.txt', 'src/AutoRemesher/*.cpp') }}
+          restore-keys: build-windows-x64-
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Conan install
+        run: |
+          conan profile detect --force
+          conan install . -of build ${{ env.CONAN_ARGS }}
+
+      - name: Configure (single configure for all artifacts)
+        shell: pwsh
+        run: |
+          $launcher = @()
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            $launcher = @("-DCMAKE_C_COMPILER_LAUNCHER=sccache", "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
+          }
+          cmake --preset conan-release `
+            -DAR_PYTHON311_EXECUTABLE="$env:PY311_EXECUTABLE" `
+            -DAR_PYTHON312_EXECUTABLE="$env:PY312_EXECUTABLE" `
+            @launcher
+
+      - name: Build (core compiled once; bindings/CLI/tests link against it)
+        run: cmake --build --preset conan-release --parallel
+
+      - name: Test (ctest, per-test)
+        run: ctest --preset conan-release --output-on-failure
+
+      - name: Test report (full suite, JSON timings)
+        shell: pwsh
+        run: |
+          $env:AR_TEST_REPORT = "$env:GITHUB_WORKSPACE\test_report.json"
+          & .\build\build\Release\tests\autoremesher_tests.exe
+
+      - name: Verify no third-party DLLs in artifacts
+        shell: pwsh
+        run: |
+          $dlls = Get-ChildItem -Path build\build\Release -Filter "*.dll" -Recurse -ErrorAction SilentlyContinue
+          if ($dlls) { $dlls | Select-Object FullName; exit 1 }
+          Write-Host "OK: fully static (no DLLs next to binaries)"
+
+      - name: Package wheels
+        shell: pwsh
+        run: |
+          python scripts\package_wheels.py `
+            --build-dir build\build\Release `
+            --version "$env:AR_VERSION" `
+            --platform-tag win_amd64 `
+            --outdir wheelhouse
+          Get-ChildItem wheelhouse
+
+      - name: Smoke test wheels (3.11 dedicated + 3.12 abi3)
+        shell: pwsh
+        run: |
+          $cp311 = (Get-ChildItem wheelhouse\*cp311-*.whl).FullName
+          $abi3 = (Get-ChildItem wheelhouse\*abi3-*.whl).FullName
+          & $env:PY311_EXECUTABLE -m pip install --quiet numpy $cp311
+          & $env:PY311_EXECUTABLE scripts\smoke_test.py
+          & $env:PY312_EXECUTABLE -m pip install --quiet numpy $abi3
+          & $env:PY312_EXECUTABLE scripts\smoke_test.py
+
+      - name: Smoke test CLI
+        shell: pwsh
+        run: |
+          python -c "verts=[(x,y,z) for x in (0.,1.) for y in (0.,1.) for z in (0.,1.)]; faces=[(0,1,3,2),(4,6,7,5),(0,4,5,1),(2,3,7,6),(0,2,6,4),(1,5,7,3)]; f=open('cube.obj','w'); [f.write(f'v {v[0]} {v[1]} {v[2]}\n') for v in verts]; [f.write('f '+' '.join(str(i+1) for i in q)+'\n') for q in faces]; f.close()"
+          & .\build\build\Release\cli\autoremesher-cli.exe `
+            -i cube.obj -o cube_remeshed.obj --report cli_report.txt `
+            --target-quads 200 --quiet
+          if (-not ((Test-Path cube_remeshed.obj) -and (Test-Path cli_report.txt))) { exit 1 }
+          (Select-String -Path cube_remeshed.obj -Pattern "^f ").Count
+
+      - name: Save caches
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.conan2
+            $env:LOCALAPPDATA\sccache
+          key: build-windows-x64-${{ hashFiles('conanfile.py', 'CMakeLists.txt', 'src/AutoRemesher/*.cpp') }}
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoremesher-wheels-windows-x64
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+      - name: Upload CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoremesher-cli-windows-x64
+          path: build/build/Release/cli/autoremesher-cli.exe
+          if-no-files-found: error
+
+      - name: Upload test report
+        uses: actions/upload-artifact@v4
+        with:
+          name: autoremesher-test-report-windows
+          path: |
+            test_report.json
+            cli_report.txt

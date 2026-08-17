@@ -35,6 +35,14 @@
 build/
 build2/
 
+# CMake/Conan generated (library bindings / CLI / tests build)
+CMakeUserPresets.json
+dist/
+*.whl
+test_report.json
+test_run.log
+build_log_local.txt
+
 # Generated build artifacts
 .qmake.stash
 Makefile
