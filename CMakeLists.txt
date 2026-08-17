@@ -47,6 +47,11 @@ add_subdirectory(thirdparty/tbb EXCLUDE_FROM_ALL)
 if(TARGET tbb_static)
     set_property(TARGET tbb_static PROPERTY CXX_STANDARD 14)
     set_property(TARGET tbb_static PROPERTY CXX_STANDARD_REQUIRED ON)
+    # GCC 14 introduced -Wchanges-meaning and treats the old TBB task.h
+    # name reuse as an error. Suppress it so the bundled legacy TBB compiles.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
+        target_compile_options(tbb_static PRIVATE -Wno-changes-meaning)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
