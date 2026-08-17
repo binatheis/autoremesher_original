@@ -130,7 +130,16 @@ function(ar_add_python_module TAG PYTHON_EXE ABI3)
 
     if(NOT MSVC)
         target_link_options(autoremesher_engine_${TAG} PRIVATE
-            $<$<PLATFORM_ID:Linux>:-Wl,--gc-sections>)
+            $<$<PLATFORM_ID:Linux>:-Wl,--gc-sections>
+            # On Linux, static libraries linked into a shared module export
+            # their symbols with default visibility, even when the module
+            # itself uses CXX_VISIBILITY_PRESET hidden. TBB's exported
+            # symbols (tbb::internal::*, governor, task_scheduler, etc.)
+            # clash with symbols from other loaded libraries (numpy, system
+            # TBB, etc.) and cause a segfault at import time. --exclude-libs
+            # prevents any static-library symbol from being exported, so
+            # only the nanobind PyInit_ entry point remains visible.
+            $<$<PLATFORM_ID:Linux>:-Wl,--exclude-libs,ALL>)
     endif()
 
     message(STATUS "Python module [${TAG}]: ${PYTHON_EXE}")
