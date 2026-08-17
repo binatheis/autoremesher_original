@@ -33,11 +33,6 @@ jobs:
     runs-on: ubuntu-22.04
     container: quay.io/pypa/manylinux_2_28_x86_64
     timeout-minutes: 120
-    env:
-      # On Linux the bundled TBB is built as a shared library so its internal
-      # RML loader is robust inside a Python extension .so. Tests/CLI need the
-      # build tree in the library search path.
-      LD_LIBRARY_PATH: build/build/Release/thirdparty/tbb
 
     steps:
       - uses: actions/checkout@v4
@@ -71,7 +66,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ccache
-          key: ccache-linux-x64-${{ hashFiles('src/AutoRemesher/*.cpp', 'thirdparty/tbb/src/**') }}
+          key: ccache-linux-x64-${{ hashFiles('src/AutoRemesher/*.cpp') }}
           restore-keys: ccache-linux-x64-
 
       - name: Conan install
@@ -95,15 +90,11 @@ jobs:
 
       - name: Test (ctest, per-test)
         run: ctest --preset conan-release --output-on-failure
-        env:
-          LD_LIBRARY_PATH: build/build/Release/thirdparty/tbb
 
       - name: Test report (full suite, JSON timings)
         run: |
           export AR_TEST_REPORT="$GITHUB_WORKSPACE/test_report.json"
           ./build/build/Release/tests/autoremesher_tests
-        env:
-          LD_LIBRARY_PATH: build/build/Release/thirdparty/tbb
 
       - name: Package wheels
         run: |
@@ -129,6 +120,9 @@ jobs:
             PYTHONFAULTHANDLER=1 $PY -u scripts/smoke_test.py
           done
 
+      - name: Install CLI (bundles oneTBB shared library)
+        run: cmake --install build/build/Release --prefix dist_cli
+
       - name: Smoke test CLI
         run: |
           /opt/python/cp312-cp312/bin/python - <<'EOF'
@@ -138,7 +132,7 @@ jobs:
               for v in verts: f.write(f"v {v[0]} {v[1]} {v[2]}\n")
               for q in faces: f.write("f " + " ".join(str(i + 1) for i in q) + "\n")
           EOF
-          ./build/build/Release/cli/autoremesher-cli \
+          ./dist_cli/bin/autoremesher-cli \
             -i cube.obj -o cube_remeshed.obj --report cli_report.txt \
             --target-quads 200 --quiet
           test -f cube_remeshed.obj && test -f cli_report.txt
@@ -156,7 +150,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/ccache
-          key: ccache-linux-x64-${{ hashFiles('src/AutoRemesher/*.cpp', 'thirdparty/tbb/src/**') }}
+          key: ccache-linux-x64-${{ hashFiles('src/AutoRemesher/*.cpp') }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -169,9 +163,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: autoremesher-cli-linux-x86_64
-          path: |
-            build/build/Release/cli/autoremesher-cli
-            build/build/Release/thirdparty/tbb/libtbb.so*
+          path: dist_cli/
           if-no-files-found: error
 
       - name: Upload test report
